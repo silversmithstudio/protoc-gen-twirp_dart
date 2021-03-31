@@ -19,89 +19,25 @@ const apiTemplate = `
 import '{{.Path}}';
 {{- end}}
 
+part '{{.FileNameWithoutDartExtension}}.g.dart';
+part '{{.FileNameWithoutDartExtension}}.chopper.dart';
+
 {{- range .Models}}
 {{- if not .Primitive}}
+@JsonSerializable()
 class {{.Name}} {
 
-	{{.Name}}(
+	{{.Name}}({
 	{{range .Fields -}}
 		this.{{.Name}},
-	{{- end}});
+	{{- end}}});
 
     {{range .Fields -}}
     {{.Type}} {{.Name}};
     {{end}}
-	
-	factory {{.Name}}.fromJson(Map<String,dynamic> json) {
-		{{- range .Fields -}}
-			{{if .IsMap}}
-			var {{.Name}}Map = new {{.Type}}();
-			(json['{{.JSONName}}'] as Map<String, dynamic>)?.forEach((key, val) {
-				{{if .MapValueField.IsMessage}}
-				{{.Name}}Map[key] = new {{.MapValueField.Type}}.fromJson(val as Map<String,dynamic>);
-				{{else}}
-				if (val is String) {
-					{{if eq .MapValueField.Type "double"}}
-						{{.Name}}Map[key] = double.parse(val);
-					{{end}}
-					{{if eq .MapValueField.Type "int"}}
-						{{.Name}}Map[key] = int.parse(val);
-					{{end}}
-				} else if (val is num) {
-					{{if eq .MapValueField.Type "double"}}
-						{{.Name}}Map[key] = val.toDouble();
-					{{end}}
-					{{if eq .MapValueField.Type "int"}}
-						{{.Name}}Map[key] = val.toInt();
-					{{end}}
-				}
-				{{end}}
-			});
-			{{end}}
-		{{end}}
 
-		return new {{.Name}}(
-		{{- range .Fields -}}
-		{{if .IsMap}}
-		{{.Name}}Map,
-		{{else if and .IsRepeated .IsMessage}}
-		json['{{.JSONName}}'] != null
-          ? (json['{{.JSONName}}'] as List)
-              .map((d) => new {{.InternalType}}.fromJson(d))
-              .toList()
-          : <{{.InternalType}}>[],
-		{{else if .IsRepeated }}
-		json['{{.JSONName}}'] != null ? (json['{{.JSONName}}'] as List).cast<{{.InternalType}}>() : <{{.InternalType}}>[],
-		{{else if and (.IsMessage) (eq .Type "DateTime")}}
-		{{.Type}}.tryParse(json['{{.JSONName}}']),
-		{{else if .IsMessage}}
-		new {{.Type}}.fromJson(json['{{.JSONName}}']),
-		{{else}}
-		json['{{.JSONName}}'] as {{.Type}}, 
-		{{- end}}
-		{{- end}}
-		);	
-	}
-
-	Map<String,dynamic>toJson() {
-		var map = new Map<String, dynamic>();
-    	{{- range .Fields -}}
-		{{- if .IsMap }}
-		map['{{.JSONName}}'] = json.decode(json.encode({{.Name}}));
-		{{- else if and .IsRepeated .IsMessage}}
-		map['{{.JSONName}}'] = {{.Name}}?.map((l) => l.toJson())?.toList();
-		{{- else if .IsRepeated }}
-		map['{{.JSONName}}'] = {{.Name}}?.map((l) => l)?.toList();
-		{{- else if and (.IsMessage) (eq .Type "DateTime")}}
-		map['{{.JSONName}}'] = {{.Name}}.toIso8601String();
-		{{- else if .IsMessage}}
-		map['{{.JSONName}}'] = {{.Name}}.toJson();
-		{{- else}}
-    	map['{{.JSONName}}'] = {{.Name}};
-    	{{- end}}
-		{{- end}}
-		return map;
-	}
+  factory {{.Name}}.fromJson(Map<String, dynamic> json) => _${{.Name}}FromJson(json);
+  Map<String, dynamic> toJson() => _${{Name}}ToJson(this);
 
   @override
   String toString() {
@@ -111,11 +47,26 @@ class {{.Name}} {
 {{end -}}
 {{end -}}
 
+/*
 {{range .Services}}
 abstract class {{.Name}} {
 	{{- range .Methods}}
 	Future<{{.OutputType}}>{{.Name}}({{.InputType}} {{.InputArg}});
     {{- end}}
+}
+*/
+
+@ChopperApi(baseUrl: "twirp")
+abstract class {{.Name}}Service extends ChopperService {
+
+	// A helper method that helps instantiating the service. You can omit this method and use the generated class directly instead.
+	static {{.Name}}Service create([ChopperClient client]) => 
+	  _${{.Name}}Service(client);
+
+	{{- range .Methods}}
+	@Post(path: '{{.PATH}}')
+	Future<{{.OutputType}}>{{.Name}}(@Body() {{.InputType}} {{.InputArg}});
+	{{- end}}
 }
 
 class Default{{.Name}} implements {{.Name}} {
@@ -158,6 +109,14 @@ class Default{{.Name}} implements {{.Name}} {
 }
 
 {{end}}
+
+<ChopperService> serviceInstances() {
+	return [
+	{{range .Services}}
+	{{.Name}}Service.create(),
+	{{end}}
+	];
+}
 
 `
 
@@ -204,10 +163,11 @@ func NewAPIContext() APIContext {
 }
 
 type APIContext struct {
-	Models      []*Model
-	Services    []*Service
-	Imports     []Import
-	modelLookup map[string]*Model
+	Models                       []*Model
+	Services                     []*Service
+	Imports                      []Import
+	FileNameWithoutDartExtension string
+	modelLookup                  map[string]*Model
 }
 
 type Import struct {
@@ -224,8 +184,8 @@ func (ctx *APIContext) ApplyImports(d *descriptor.FileDescriptorProto) {
 
 	if len(ctx.Services) > 0 {
 		deps = append(deps, Import{"dart:async"})
-		deps = append(deps, Import{"package:http/http.dart"})
-		deps = append(deps, Import{"package:requester/requester.dart"})
+		deps = append(deps, Import{"package:json_annotation/json_annotation.dart"})
+		deps = append(deps, Import{"package:chopper/chopper.dart"})
 		deps = append(deps, Import{"package:twirp_dart_core/twirp_dart_core.dart"})
 	}
 	deps = append(deps, Import{"dart:convert"})
@@ -397,6 +357,7 @@ func CreateClientAPI(d *descriptor.FileDescriptorProto, generator *generator.Gen
 	}
 
 	b := bytes.NewBufferString("")
+	ctx.FileNameWithoutDartExtension = strings.Replace(dartModuleFilename(d), ".dart", "", 1)
 	err = t.Execute(b, ctx)
 	if err != nil {
 		return nil, err
