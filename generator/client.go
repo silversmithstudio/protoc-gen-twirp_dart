@@ -10,18 +10,22 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"text/template"
 )
 
 const apiTemplate = `
-{{- range .Imports}}
-import '{{.Path}}';
-{{- end}}
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:chopper/chopper.dart';
+import 'package:json_annotation/json_annotation.dart' hide JsonConverter;
 
 part '{{.FileNameWithoutDartExtension}}.g.dart';
 part '{{.FileNameWithoutDartExtension}}.chopper.dart';
 
+/* Models */
 {{- range .Models}}
 {{- if not .Primitive}}
 @JsonSerializable()
@@ -33,11 +37,11 @@ class {{.Name}} {
 	{{- end}}});
 
     {{range .Fields -}}
-    {{.Type}} {{.Name}};
+    {{.Type}}? {{.Name}};
     {{end}}
 
-  factory {{.Name}}.fromJson(Map<String, dynamic> json) => _${{.Name}}FromJson(json);
-  Map<String, dynamic> toJson() => _${{Name}}ToJson(this);
+  static const fromJson = _${{.Name}}FromJson;
+  Map<String, dynamic> toJson() => _${{.Name}}ToJson(this);
 
   @override
   String toString() {
@@ -47,73 +51,85 @@ class {{.Name}} {
 {{end -}}
 {{end -}}
 
-/*
+/* Services */
 {{range .Services}}
-abstract class {{.Name}} {
-	{{- range .Methods}}
-	Future<{{.OutputType}}>{{.Name}}({{.InputType}} {{.InputArg}});
-    {{- end}}
-}
-*/
 
 @ChopperApi(baseUrl: "twirp")
 abstract class {{.Name}}Service extends ChopperService {
 
-	// A helper method that helps instantiating the service. You can omit this method and use the generated class directly instead.
-	static {{.Name}}Service create([ChopperClient client]) => 
+	static {{.Name}}Service create([ChopperClient? client]) => 
 	  _${{.Name}}Service(client);
 
+	{{$package := .Package}}
+    {{$name := .Name}}
+
 	{{- range .Methods}}
-	@Post(path: '{{.PATH}}')
-	Future<{{.OutputType}}>{{.Name}}(@Body() {{.InputType}} {{.InputArg}});
+	@Post(path: '{{$package}}.{{$name}}/{{.Path}}')
+	Future<Response<{{.OutputType}}>>{{.Name}}(@Body() {{.InputType}} {{.InputArg}});
 	{{- end}}
-}
-
-class Default{{.Name}} implements {{.Name}} {
-	final String hostname;
-    Requester _requester;
-	final _pathPrefix = "/twirp/{{.Package}}.{{.Name}}/";
-
-    Default{{.Name}}(this.hostname, {Requester requester}) {
-		if (requester == null) {
-      		_requester = new Requester(new Client());
-    	} else {
-			_requester = requester;
-		}
-	}
-
-    {{range .Methods}}
-	Future<{{.OutputType}}>{{.Name}}({{.InputType}} {{.InputArg}}) async {
-		var url = "${hostname}${_pathPrefix}{{.Path}}";
-		var uri = Uri.parse(url);
-    	var request = new Request('POST', uri);
-		request.headers['Content-Type'] = 'application/json';
-    	request.body = json.encode({{.InputArg}}.toJson());
-    	var response = await _requester.send(request);
-		if (response.statusCode != 200) {
-     		throw twirpException(response);
-    	}
-    	var value = json.decode(response.body);
-    	return {{.OutputType}}.fromJson(value);
-	}
-    {{end}}
-
-	Exception twirpException(Response response) {
-    	try {
-      		var value = json.decode(response.body);
-      		return new TwirpJsonException.fromJson(value);
-    	} catch (e) {
-      		return new TwirpException(response.body);
-    	}
-  	}
 }
 
 {{end}}
 
-<ChopperService> serviceInstances() {
+/* Chopper Helpers */
+typedef T JsonFactory<T>(Map<String, dynamic> json);
+
+class JsonSerializableConverter extends JsonConverter {
+  final Map<Type, JsonFactory> factories;
+
+  JsonSerializableConverter(this.factories);
+
+  T? _decodeMap<T>(Map<String, dynamic> values) {
+    /// Get jsonFactory using Type parameters
+    /// if not found or invalid, throw error or return null
+    final jsonFactory = factories[T];
+    if (jsonFactory == null || jsonFactory is! JsonFactory<T>) {
+      /// throw serializer not found error;
+      return null;
+    }
+
+    return jsonFactory(values);
+  }
+
+  List<T> _decodeList<T>(List values) =>
+      values.where((v) => v != null).map<T>((v) => _decode<T>(v)).toList();
+
+  dynamic _decode<T>(entity) {
+    if (entity is List) return _decodeList<T>(entity);
+
+    if (entity is Map<String, dynamic>) return _decodeMap<T>(entity);
+
+    return entity;
+  }
+
+  @override
+  Response<ResultType> convertResponse<ResultType, Item>(Response response) {
+    // use [JsonConverter] to decode json
+    final jsonRes = super.convertResponse(response);
+
+    return jsonRes.copyWith<ResultType>(body: _decode<Item>(jsonRes.body));
+  }
+
+  @override
+  // all objects should implements toJson method
+  Request convertRequest(Request request) => super.convertRequest(request);
+
+  // Response convertError<ResultType, Item>(Response response) {
+  //   // use [JsonConverter] to decode json
+  //   final jsonRes = super.convertError(response);
+  //
+  //   return jsonRes.copyWith<ResourceError>(
+  //     body: ResourceError.fromJsonFactory(jsonRes.body),
+  //   );
+  // }
+}
+
+/* Service registration for ChopperClient */
+
+List<ChopperService> serviceInstances() {
 	return [
 	{{range .Services}}
-	{{.Name}}Service.create(),
+		{{.Name}}Service.create(),
 	{{end}}
 	];
 }
@@ -186,7 +202,6 @@ func (ctx *APIContext) ApplyImports(d *descriptor.FileDescriptorProto) {
 		deps = append(deps, Import{"dart:async"})
 		deps = append(deps, Import{"package:json_annotation/json_annotation.dart"})
 		deps = append(deps, Import{"package:chopper/chopper.dart"})
-		deps = append(deps, Import{"package:twirp_dart_core/twirp_dart_core.dart"})
 	}
 	deps = append(deps, Import{"dart:convert"})
 
@@ -357,7 +372,8 @@ func CreateClientAPI(d *descriptor.FileDescriptorProto, generator *generator.Gen
 	}
 
 	b := bytes.NewBufferString("")
-	ctx.FileNameWithoutDartExtension = strings.Replace(dartModuleFilename(d), ".dart", "", 1)
+	dartFileName := filepath.Base(dartModuleFilename(d))
+	ctx.FileNameWithoutDartExtension = strings.Replace(dartFileName, ".dart", "", 1)
 	err = t.Execute(b, ctx)
 	if err != nil {
 		return nil, err
