@@ -20,7 +20,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:chopper/chopper.dart';
-import 'package:json_annotation/json_annotation.dart' hide JsonConverter;
+import 'package:json_annotation/json_annotation.dart';
 
 part '{{.FileNameWithoutDartExtension}}.g.dart';
 part '{{.FileNameWithoutDartExtension}}.chopper.dart';
@@ -49,11 +49,10 @@ class {{.Name}} {
   }
 }
 {{end -}}
-{{end -}}
+{{end}}
 
 /* Services */
 {{range .Services}}
-
 @ChopperApi(baseUrl: "twirp")
 abstract class {{.Name}}Service extends ChopperService {
 
@@ -71,67 +70,26 @@ abstract class {{.Name}}Service extends ChopperService {
 
 {{end}}
 
-/* Chopper Helpers */
-typedef T JsonFactory<T>(Map<String, dynamic> json);
-
-class JsonSerializableConverter extends JsonConverter {
-  final Map<Type, JsonFactory> factories;
-
-  JsonSerializableConverter(this.factories);
-
-  T? _decodeMap<T>(Map<String, dynamic> values) {
-    /// Get jsonFactory using Type parameters
-    /// if not found or invalid, throw error or return null
-    final jsonFactory = factories[T];
-    if (jsonFactory == null || jsonFactory is! JsonFactory<T>) {
-      /// throw serializer not found error;
-      return null;
-    }
-
-    return jsonFactory(values);
-  }
-
-  List<T> _decodeList<T>(List values) =>
-      values.where((v) => v != null).map<T>((v) => _decode<T>(v)).toList();
-
-  dynamic _decode<T>(entity) {
-    if (entity is List) return _decodeList<T>(entity);
-
-    if (entity is Map<String, dynamic>) return _decodeMap<T>(entity);
-
-    return entity;
-  }
-
-  @override
-  Response<ResultType> convertResponse<ResultType, Item>(Response response) {
-    // use [JsonConverter] to decode json
-    final jsonRes = super.convertResponse(response);
-
-    return jsonRes.copyWith<ResultType>(body: _decode<Item>(jsonRes.body));
-  }
-
-  @override
-  // all objects should implements toJson method
-  Request convertRequest(Request request) => super.convertRequest(request);
-
-  // Response convertError<ResultType, Item>(Response response) {
-  //   // use [JsonConverter] to decode json
-  //   final jsonRes = super.convertError(response);
-  //
-  //   return jsonRes.copyWith<ResourceError>(
-  //     body: ResourceError.fromJsonFactory(jsonRes.body),
-  //   );
-  // }
-}
-
-/* Service registration for ChopperClient */
+/* Service & Type registration for ChopperClient */
 
 List<ChopperService> serviceInstances() {
 	return [
-	{{range .Services}}
+	{{- range .Services -}}
 		{{.Name}}Service.create(),
-	{{end}}
+	{{- end -}}
 	];
+}
+
+typedef T JsonFactory<T>(Map<String, dynamic> json);
+
+Map<Type, JsonFactory> typeFactories() {
+	return {
+	{{- range .Models -}}
+		{{- if not .Primitive}}
+		{{.Name}}:{{.Name}}.fromJson,
+		{{- end -}}
+	{{- end -}}
+	};
 }
 
 `
